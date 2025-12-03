@@ -44,13 +44,11 @@ El sketch expone comandos por Serial (9600 baudios) y lógica automática:
 
 ### 2) Configurar Python en Windows
 Requisitos:
-- Python 3.9+ instalado
+- Python 3.14 instalado
 - Drivers del puerto serial (Arduino)
 
-Desde PowerShell en la carpeta `Memo`:
+Instala dependencias (sin entorno virtual):
 ```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
 pip install pyserial requests SpeechRecognition sounddevice numpy python-dotenv
 ```
 
@@ -67,7 +65,6 @@ OPENWEATHER_API_KEY=tu_api_key_aqui
 ## Uso del cliente
 Ejecuta:
 ```powershell
-.\.venv\Scripts\Activate.ps1
 python casa_domotica.py
 ```
 Verás el menú de comandos por voz o texto.
