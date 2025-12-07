@@ -1,22 +1,100 @@
-const int LED_SALA    = 2;
-const int LED_CUARTO1 = 3;
-const int LED_CUARTO2 = 4;
-const int LED_GARAJE  = 5;
-const int LED_VENT    = 6;
-const int LED_PUERTA  = 7;
+#include <Servo.h>
 
-const int BUZZER_PIN  = 11;
+// =====================
+// Pines de salida
+// =====================
+const int LED_SALA       = 2;
+const int LED_CUARTO1    = 3;
+const int LED_CUARTO2    = 4;
+const int LED_GARAJE     = 5;
+const int SERVO_VENT_PIN = 6;   // Servo SG90 (ventilador)
+const int LED_PUERTA     = 7;
 
-const int TRIG_PIN = 9;
-const int ECHO_PIN = 10;
+const int BUZZER_PIN     = 11;
 
-const int LDR_PIN  = A0;
+// LDR (sensor de luz)
+const int LDR_PIN        = A0;
 
-const int LDR_UMBRAL_NOCHE = 400;
-const long DIST_UMBRAL_PUERTA = 30;
+// =====================
+// Servo (ventilador)
+// =====================
+Servo servoVent;
+bool ventiladorEncendido = false;   // estado del ventilador
 
-bool puertaAbierta = false;
+int anguloServo = 0;                // ángulo actual del servo
+int pasoServo   = 6;                // cuánto cambia cada actualización (velocidad)
+unsigned long ultimoMovimientoServo = 0;
+const unsigned long INTERVALO_SERVO = 5; // ms entre movimientos (más chico = más rápido)
 
+// =====================
+// LDR → luz automática del garaje + buzzer en cambios
+// =====================
+int UMBRAL_OBSCURIDAD = 600;          // menos de 600 = consideramos obscuridad
+unsigned long ultimoLDR = 0;
+const unsigned long INTERVALO_LDR = 200; // ms entre lecturas de luz
+
+bool estadoOscuro = false;           // estado anterior: estaba oscuro o no
+
+// Modo automático / manual del garaje
+bool modoAutomaticoGaraje = false;   // false = manual (D/d), true = automático (LDR)
+
+// =====================
+// Prototipos
+// =====================
+void actualizarServoVentilador();
+void sonarAlarma();
+void controlarLuzPorLDR();
+
+// ======== TONOS PERSONALIZADOS ========
+
+void beepTono(int freq, int dur) {
+  tone(BUZZER_PIN, freq, dur);
+  delay(dur + 10);
+}
+
+void sonidoEncender() {          // 🔔 Encender luz
+  beepTono(1200, 80);
+}
+
+void sonidoApagar() {            // 🔕 Apagar luz
+  beepTono(600, 80);
+}
+
+void sonidoAbrirPuerta() {       // 🚪 Abrir puerta
+  beepTono(700, 150);
+}
+
+void sonidoCerrarPuerta() {      // 🚪 Cerrar puerta
+  beepTono(900, 80);
+}
+
+void sonidoVentiladorOn() {      // 🌀 Encender ventilador
+  beepTono(900, 60);
+  beepTono(1200, 60);
+}
+
+void sonidoVentiladorOff() {     // 🌀 Apagar ventilador
+  beepTono(1200, 60);
+  beepTono(900, 60);
+}
+
+void sonidoModoAutomatico() {    // 🌗 Activar automático
+  beepTono(1100, 60);
+  beepTono(1300, 60);
+}
+
+void sonidoModoManual() {        // 🌗 Desactivar automático
+  beepTono(700, 60);
+  beepTono(500, 60);
+}
+
+void beepCambioLuz() {           // 🔦 Cambio por LDR
+  beepTono(800, 80);
+}
+
+// =====================
+// Setup
+// =====================
 void setup() {
   Serial.begin(9600);
 
@@ -24,129 +102,231 @@ void setup() {
   pinMode(LED_CUARTO1, OUTPUT);
   pinMode(LED_CUARTO2, OUTPUT);
   pinMode(LED_GARAJE,  OUTPUT);
-  pinMode(LED_VENT,    OUTPUT);
   pinMode(LED_PUERTA,  OUTPUT);
+  pinMode(BUZZER_PIN,  OUTPUT);
+  // LDR en A0 es entrada analógica por defecto
 
-  pinMode(BUZZER_PIN, OUTPUT);
+  // Servo
+  servoVent.attach(SERVO_VENT_PIN);
+  servoVent.write(0);  // posición inicial (ventilador "apagado")
 
-  pinMode(TRIG_PIN, OUTPUT);
-  pinMode(ECHO_PIN, INPUT);
-
-  apagarTodo();
-}
-
-void loop() {
-  if (Serial.available()) {
-    char c = Serial.read();
-    procesarComando(c);
-  }
-
-  comportamientoAutomatico();
-  delay(50);
-}
-
-void apagarTodo() {
+  // Todo apagado al inicio
   digitalWrite(LED_SALA,    LOW);
   digitalWrite(LED_CUARTO1, LOW);
   digitalWrite(LED_CUARTO2, LOW);
   digitalWrite(LED_GARAJE,  LOW);
-  digitalWrite(LED_VENT,    LOW);
   digitalWrite(LED_PUERTA,  LOW);
-  noTone(BUZZER_PIN);
+  digitalWrite(BUZZER_PIN,  LOW);
 }
 
-void procesarComando(char c) {
-  switch (c) {
-    case 'A': digitalWrite(LED_SALA, HIGH);  beepCorto(); break;
-    case 'a': digitalWrite(LED_SALA, LOW);   beepCorto(); break;
+// =====================
+// Loop principal
+// =====================
+void loop() {
+  // 1) Procesar comandos recibidos por Serial desde Python
+  if (Serial.available() > 0) {
+    char cmd = (char)Serial.read();
 
-    case 'B': digitalWrite(LED_CUARTO1, HIGH); beepCorto(); break;
-    case 'b': digitalWrite(LED_CUARTO1, LOW);  beepCorto(); break;
+    switch (cmd) {
+      // ===== Luces habitaciones =====
+      case 'A':
+        digitalWrite(LED_SALA, HIGH);
+        sonidoEncender();
+        break;
 
-    case 'C': digitalWrite(LED_CUARTO2, HIGH); beepCorto(); break;
-    case 'c': digitalWrite(LED_CUARTO2, LOW);  beepCorto(); break;
+      case 'a':
+        digitalWrite(LED_SALA, LOW);
+        sonidoApagar();
+        break;
 
-    case 'D': digitalWrite(LED_GARAJE, HIGH);  beepCorto(); break;
-    case 'd': digitalWrite(LED_GARAJE, LOW);   beepCorto(); break;
+      case 'B':
+        digitalWrite(LED_CUARTO1, HIGH);
+        sonidoEncender();
+        break;
 
-    case 'V': digitalWrite(LED_VENT, HIGH); beepCorto(); break;
-    case 'v': digitalWrite(LED_VENT, LOW);  beepCorto(); break;
+      case 'b':
+        digitalWrite(LED_CUARTO1, LOW);
+        sonidoApagar();
+        break;
 
-    case 'P': abrirPuerta();  break;
-    case 'p': cerrarPuerta(); break;
+      case 'C':
+        digitalWrite(LED_CUARTO2, HIGH);
+        sonidoEncender();
+        break;
 
-    case 'H': alarmaTemperatura(); break;
+      case 'c':
+        digitalWrite(LED_CUARTO2, LOW);
+        sonidoApagar();
+        break;
 
-    case 'L': {
-      int luz = analogRead(LDR_PIN);
-      Serial.println(luz);
-      break;
+      // ===== Garaje (solo funciona si estamos en modo MANUAL) =====
+      case 'D':
+        if (!modoAutomaticoGaraje) {
+          digitalWrite(LED_GARAJE, HIGH);
+          sonidoEncender();
+        }
+        break;
+
+      case 'd':
+        if (!modoAutomaticoGaraje) {
+          digitalWrite(LED_GARAJE, LOW);
+          sonidoApagar();
+        }
+        break;
+
+      // ===== Ventilador (servo) =====
+      case 'V':
+        // Encender ventilador → empezamos a mover el servo en actualizarServoVentilador()
+        ventiladorEncendido = true;
+        sonidoVentiladorOn();
+        break;
+
+      case 'v':
+        // Apagar ventilador → detener servo y llevarlo a 0°
+        ventiladorEncendido = false;
+        anguloServo = 0;
+        pasoServo   = 6;
+        servoVent.write(0);
+        sonidoVentiladorOff();
+        break;
+
+      // ===== Puerta (LED) =====
+      case 'P':
+        // Abrir puerta
+        digitalWrite(LED_PUERTA, HIGH);
+        sonidoAbrirPuerta();
+        break;
+
+      case 'p':
+        // Cerrar puerta
+        digitalWrite(LED_PUERTA, LOW);
+        sonidoCerrarPuerta();
+        break;
+
+      // ===== Alarma (buzzer) – comando 'H' desde Python =====
+      case 'H':
+        sonarAlarma();
+        break;
+
+      // ===== Lectura LDR para Python (comando 'L') =====
+      case 'L': {
+        int luz = analogRead(LDR_PIN);
+        Serial.println(luz);   // Python leerá este valor con readline()
+        break;
+      }
+
+      // ===== Modo automático ON (M) / OFF (m) para la luz del garaje =====
+      case 'M':
+        modoAutomaticoGaraje = true;
+        // opcional: poner estadoOscuro inicial según lectura actual
+        estadoOscuro = (analogRead(LDR_PIN) < UMBRAL_OBSCURIDAD);
+        sonidoModoAutomatico();
+        break;
+
+      case 'm':
+        modoAutomaticoGaraje = false;
+        // opcional: apagar garaje al salir de modo automático
+        // digitalWrite(LED_GARAJE, LOW);
+        sonidoModoManual();
+        break;
+
+      default:
+        // Comando no reconocido: no hacemos nada
+        break;
+    }
+  }
+
+  // 2) Actualizar movimiento del servo si el ventilador está encendido
+  actualizarServoVentilador();
+
+  // 3) Control automático de la luz del garaje con el LDR + buzzer en cambios
+  controlarLuzPorLDR();
+}
+
+// =====================
+// Movimiento continuo del servo (simula ventilador)
+// =====================
+void actualizarServoVentilador() {
+  if (!ventiladorEncendido) {
+    return;  // si está apagado, no movemos nada
+  }
+
+  unsigned long ahora = millis();
+  if (ahora - ultimoMovimientoServo >= INTERVALO_SERVO) {
+    ultimoMovimientoServo = ahora;
+
+    // Barrido 0 -> 180 -> 0 -> 180 ...
+    anguloServo += pasoServo;
+
+    if (anguloServo >= 180 || anguloServo <= 0) {
+      pasoServo = -pasoServo;  // invierte la dirección
     }
 
-    case 'R': {
-      long dist = medirDistancia();
-      Serial.println(dist);
-      break;
-    }
+    servoVent.write(anguloServo);
   }
 }
 
-void beepCorto() {
-  tone(BUZZER_PIN, 2000, 100);
-  delay(120);
-}
-
-void abrirPuerta() {
-  digitalWrite(LED_PUERTA, HIGH);
-  puertaAbierta = true;
-  tone(BUZZER_PIN, 1500, 200);
-  delay(220);
-}
-
-void cerrarPuerta() {
-  digitalWrite(LED_PUERTA, LOW);
-  puertaAbierta = false;
-  tone(BUZZER_PIN, 800, 200);
-  delay(220);
-}
-
-void alarmaTemperatura() {
+// =====================
+// Alarma con el buzzer (para 'H')
+// =====================
+void sonarAlarma() {
+  // Ejemplo simple: 3 beeps rápidos
   for (int i = 0; i < 3; i++) {
-    tone(BUZZER_PIN, 2500);
-    delay(200);
-    noTone(BUZZER_PIN);
+    digitalWrite(BUZZER_PIN, HIGH);
     delay(150);
+    digitalWrite(BUZZER_PIN, LOW);
+    delay(100);
   }
 }
 
-long medirDistancia() {
-  digitalWrite(TRIG_PIN, LOW);
-  delayMicroseconds(2);
+// =====================
+// Control automático de luz del garaje con el LDR
+// + Buzzer cuando cambie el estado
+// Solo actúa si modoAutomaticoGaraje == true
+// =====================
+void controlarLuzPorLDR() {
+  if (!modoAutomaticoGaraje) {
+    return;  // En modo manual no hacemos nada con el LDR
+  }
 
-  digitalWrite(TRIG_PIN, HIGH);
-  delayMicroseconds(10);
-  digitalWrite(TRIG_PIN, LOW);
+  unsigned long ahora = millis();
 
-  long duracion = pulseIn(ECHO_PIN, HIGH, 30000);
-  long distancia = duracion / 58;
+  if (ahora - ultimoLDR >= INTERVALO_LDR) {
+    ultimoLDR = ahora;
 
-  return distancia;
-}
+    int valor = analogRead(LDR_PIN);
 
-void comportamientoAutomatico() {
-  int luz = analogRead(LDR_PIN);
-  long dist = medirDistancia();
+    // Determinar si está oscuro según el umbral
+    bool oscuro = (valor < UMBRAL_OBSCURIDAD);
 
-  bool esNoche = (luz < LDR_UMBRAL_NOCHE);
-  bool alguienEnPuerta = (dist > 0 && dist < DIST_UMBRAL_PUERTA);
+    // Si hubo cambio de estado (luz -> oscuro o oscuro -> luz)
+    if (oscuro != estadoOscuro) {
+      estadoOscuro = oscuro;
 
-  if (esNoche && alguienEnPuerta && !puertaAbierta) {
-    digitalWrite(LED_SALA, HIGH);
+      // Cambia la luz del garaje y hace beep
+      if (oscuro) {
+        // Ahora está oscuro → encender garaje
+        digitalWrite(LED_GARAJE, HIGH);
+      } else {
+        // Ahora hay luz → apagar garaje
+        digitalWrite(LED_GARAJE, LOW);
+      }
 
-    tone(BUZZER_PIN, 1000);
-    delay(150);
-    tone(BUZZER_PIN, 1500);
-    delay(150);
-    noTone(BUZZER_PIN);
+      // Beep por cambio de estado (tono especial LDR)
+      beepCambioLuz();
+    } else {
+      // Si no hubo cambio, mantenemos el estado acorde al modo automático
+      if (oscuro) {
+        digitalWrite(LED_GARAJE, HIGH);
+      } else {
+        digitalWrite(LED_GARAJE, LOW);
+      }
+    }
+
+    // Debug opcional:
+    // Serial.print("LDR: ");
+    // Serial.print(valor);
+    // Serial.print("  oscuro: ");
+    // Serial.println(oscuro ? "SI" : "NO");
   }
 }
